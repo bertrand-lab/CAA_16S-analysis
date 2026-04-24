@@ -1,0 +1,1424 @@
+---
+title: "devon_2021-2022_16S_analysis"
+author: "Jenifer Spence"
+date: '2026-04-17'
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+### Reading in data and functions
+```{r Read in Libraries}
+library(tidyverse)      # includes dplyr, tidyr, ggplot2, tibble, readr, purrr, stringr, forcats
+library(vegan)          # decostand, vegdist, prcomp, envfit, metaMDS, capscale, ordistep, 
+                        # anova.cca, adonis2, clamtest, diversity
+library(ggpubr)         # ggarrange
+library(magrittr)       # %<>%
+
+#setting a random seed for R's random number generator so that any operations that involve randomness will produce the same results every time the code it run
+set.seed(1234)
+
+```
+
+###Specifying aesthetics for ggplot###
+```{r Plotting Aesthetics}
+###Colour Palettes####
+upwelling.cols = c("Upwelling" = "#679bbf",
+                   "No upwelling" = "#b6aad3",
+                   "Below 50m" = "#2e654f",
+                   "Open Water, upper 50m" = "#e0a850")
+
+clam_cols <- c("Upwelling" = "#679bbf", "No upwelling" = "#b6aad3")
+
+bp.cols = c('Cand. Nitrosopumilus' = "#014636",
+            'Marine Group II' = "#016c59",
+            'Polaribacter' = "#74c476",
+            'Sulfitobacter' = "#02818a",
+            'Unclass. Flavobacteriaceae' = "#2171b5",
+            'NS9 Marine Group' = "#3690c0",
+            'Uncult. Nitrincolaceae' = "#67a9cf",
+            'Unclass. Rhodobacteraceae'= "#9ecae1",
+            'Ulvibacter' = "#807dba",
+            'SAR11 (Clade Ia)' = "#9e9ac8",
+            'NS11-12 Marine Group' = "#c994c7",
+            'Uncult. Flavobacteriaceae' = "#d4b9da",
+            'SUP05 Cluster' = "grey60",
+            'Formosa' = "rosybrown3",
+            'Uncult. Cryomorphaceae' = "rosybrown1",
+            'NS5 Marine Group' = "#cb181d",
+            'SAR92 Clade' = '#ef3b2c',
+            'Unclass. Colwelliaceae' = "#fd8d3c",
+            'Rubritaleae' = '#fc9272',
+            'Other (<1%)' = "#b8c8d9")
+
+###
+
+###Plot themes####
+my_text_theme = function(){
+  axis_and_tick_size = 30
+  theme(axis.title.x = element_text(size = axis_and_tick_size, colour = "black"),
+        axis.title.y = element_text(size = axis_and_tick_size, colour = "black"),
+        axis.text.x = element_text(size = axis_and_tick_size, colour = "black"),
+        axis.text.y = element_text(size = axis_and_tick_size, colour = "black"),
+        panel.border = element_rect(size = 2, color = "black"))}
+
+my_text_theme_nmds = function(){
+  axis_and_tick_size = 30
+  theme(axis.title.x = element_text(size = axis_and_tick_size, colour = "black"),
+        axis.title.y = element_text(size = axis_and_tick_size, colour = "black"),
+        axis.text.x = element_text(size = axis_and_tick_size, colour = "black"),
+        axis.text.y = element_text(size = axis_and_tick_size, colour = "black"),
+        axis.ticks = element_line(colour = "white"),
+        panel.border = element_rect(size = 2, color = "black"))}
+####
+
+```
+
+###Figure Generation###
+```{r PCA}
+# Create a PCA (Principal Component Analysis) plot with customization options
+
+# This function performs Principal Component Analysis (PCA) on ecological data, generates a PCA plot, and customizes the plot's appearance and annotations. It allows you to specify various parameters and options for visualizing the PCA results.
+
+# meta_16s: the main input metadata dataframe 
+# col_indices: the column numbers to initially subset from meta_16s before doing anything else. This corresponds to the provided original meta_16s[, c(3, 4, 6, 15, 18:23, 25, 27:30, 39:45)] line.
+# rename_map: a named character vector that maps old column names to new ones, e.g. c(Temp = "Temp_C", Depth = "Depth_m"). This replaces the rename() block and makes the renaming explicit and reusable.
+# vectors: the names of the numeric environmental variables to include in the PCA and vector fitting (post-renaming).
+
+###PCA Function####
+make_16s_pca_plot <- function(meta_16s, col_indices, rename_map, vectors) {
+  
+  # Select and clean columns
+  pca_meta <- meta_16s[, col_indices] %>%
+    na.omit() %>%
+    filter(if_all(everything(), ~ . != "NA")) %>%
+    rename(!!!rename_map)
+  
+  # Set sample IDs as rownames
+  rownames(pca_meta) <- pca_meta$SAMPLE_ID
+  
+  # Select only numeric variables for PCA
+  meta_filt <- pca_meta %>%
+    select(all_of(vectors)) %>%
+    mutate(across(everything(), ~ as.numeric(as.character(.)))) %>%
+    na.omit()
+
+  # Perform PCA
+  pca_data <- prcomp(meta_filt, scale = TRUE)
+  
+  # Proportion of variance explained by axes 1 and 2
+  sumx <- summary(pca_data)
+  prop_explained <- sumx$importance[2, 1:2]
+  
+  # Build PCA plot data frame and join with full metadata
+  pca_plot <- as.data.frame(pca_data$x[, 1:2])
+  pca_plot$SAMPLE_ID <- rownames(pca_plot)
+  pca_plot <- left_join(pca_plot, meta_16s, by = "SAMPLE_ID")
+  
+  # Add depth bin classification
+  pca_plot <- pca_plot %>%
+    mutate(depth.bin = case_when(
+      Depth_m > 50 ~ "Deep",
+      TRUE         ~ "Shallow"))
+  
+  # Vector fitting using envfit
+  meta_filt_plot <- meta_filt[rownames(meta_filt) %in% pca_plot$SAMPLE_ID, ] # use meta_filt directly since it already has the renamed, clean numeric columns
+  
+  vecs <- envfit(
+    pca_plot[, 1:2],
+    meta_filt_plot,
+    permutations = 999,
+    na.rm = TRUE)
+  
+  vecs_df <- as.data.frame(vegan::scores(vecs, display = "vectors"))
+  vecs_df <- cbind(vecs_df, Variables = rownames(vecs_df))
+  
+  # Build plot
+  temp_plot <- ggplot(pca_plot) +
+    geom_point(data = (pca_plot %>% filter(Year == 2021)),
+               aes(x = PC1, y = PC2, fill = Upwelling.Classification),
+               pch = 21, size = 12, alpha = 0.8, show.legend = FALSE) +
+    geom_point(data = (pca_plot %>% filter(Year == 2022)),
+               aes(x = PC1, y = PC2, fill = Upwelling.Classification),
+               pch = 23, size = 12, alpha = 0.8, show.legend = FALSE) +
+    scale_fill_manual(values = upwelling.cols) +
+    geom_segment(data = vecs_df,
+                 aes(x = 0, xend = PC1 * 3, y = 0, yend = PC2 * 3),
+                 arrow = arrow(length = unit(0.25, "cm")),
+                 colour = "grey4") +
+    geom_text(data = vecs_df,
+              aes(x = PC1 * 3, y = PC2 * 3, label = Variables),
+              size = 5) +
+    xlab(paste0("PCA1 (", round(prop_explained[1] * 100, 1), "%)")) +
+    ylab(paste0("PCA2 (", round(prop_explained[2] * 100, 1), "%)")) +
+    # stat_ellipse(data = pca_plot, aes(x=PC1,y=PC2, colour = depth.bin), lwd = 1.5, level=0.95, show.legend = F) + #if you want to place ellipses
+    # scale_colour_manual(values = depth.cols) + #ellipses colours
+    coord_fixed() +
+    theme_bw() +
+    theme(
+      panel.grid.major = element_blank(),
+      panel.grid.minor = element_blank(),
+      legend.position = "none") +
+    my_text_theme()
+  
+  return(temp_plot)
+}
+
+###
+
+###Calling PCA Function - Example####
+rename_map <- c(
+  Temp         = "Temp_C",
+  Turbidity    = "Turbidity_NTU",
+  Stratification = "N2",
+  Diss_O2      = "Dis_O2_Conc",
+  SiO4         = "SiO4_uM",
+  PO4          = "PO4_uM",
+  NO2          = "NO2_uM",
+  NO3          = "NO3_uM",
+  NH3          = "NH3_uM",
+  Depth        = "Depth_m"
+)
+
+numeric_vectors <- c(
+  "Temp", "Turbidity", "Stratification", "Diss_O2",
+  "SiO4", "PO4", "NO2", "NO3", "NH3", "Depth"
+)
+
+make_16s_pca_plot(
+  meta_16s    = meta_16s,
+  col_indices = c(3, 4, 6, 15, 18:23, 25, 27:30, 39:45), #or select the columns you want
+  rename_map  = rename_map,
+  vectors     = numeric_vectors
+)
+```
+
+```{r NMDS}
+# Create an NMDS (Non-metric Multidimensional Scaling) plot with customization options
+
+# This function performs NMDS ordination on ASV abundance data using Bray-Curtis dissimilarity, generates an NMDS plot, and customizes the plot's appearance and annotations. It allows you to specify various parameters for visualizing community composition differences across samples, with points coloured by a metadata variable and 95% confidence ellipses drawn around depth groups.
+
+# meta_16s: the main input metadata dataframe containing sample metadata and categorical variables
+# asv_table: the raw ASV count table to be Hellinger-transformed before ordination, where rows are samples and columns are ASVs 
+# drop_cols: column indices to drop from the ASV table before ordination (e.g. non-ASV columns such as sample ID or taxonomy)
+# fill_var: the name of the metadata column (as a string) to colour points by, e.g. "Upwelling.Classification"
+# fill_cols: a named colour palette (named vector) corresponding to the levels of fill_var
+# depth_var: the name of the metadata column (as a string) used to classify samples into depth bins, e.g. "layer.dfg"
+# depth_cols: a named colour palette (named vector) for the depth bin ellipses, with names matching "Deep" and "Shallow"
+
+###NMDS Function####
+make_16s_nmds_plot <- function(meta_16s, asv_table, drop_cols, fill_var, fill_cols, depth_var, depth_cols) {
+  
+  # Hellinger transformation of raw ASV table
+  asv_table.matrix <- asv_table %>%
+    column_to_rownames(var = "SAMPLE_ID") %>%
+    as.matrix()
+  hel_table <- decostand(asv_table.matrix, method = "hellinger")
+  
+  # Add depth bin classification
+  meta_nmds <- meta_16s %>%
+    mutate(depth.bin = case_when(
+      Depth_m > 50 ~ "Deep",
+      TRUE ~ "Shallow"))
+  
+  # Run NMDS and join with metadata
+  nmds_df <- metaNMDS_bray_and_df(hel_table, drop_cols, meta = meta_nmds)
+  
+  # Ensure Year is character for filtering
+  nmds_df$Year <- as.character(nmds_df$Year)
+  
+  # Fix sample ID labels
+  nmds_df$SAMPLE_ID <- fix_labels(nmds_df$SAMPLE_ID, meta_16s, IDt = "SAMPLE_ID")
+  
+  # Build plot
+  temp_plot <- ggplot(data = nmds_df, aes(x = x, y = y, fill = .data[[fill_var]], label = SAMPLE_ID)) +
+    geom_point(data = nmds_df %>% filter(Year == "2021"),
+               aes(x = x, y = y),
+               pch = 21, size = 12, alpha = 0.8, show.legend = TRUE) +
+    geom_point(data = nmds_df %>% filter(Year == "2022"),
+               aes(x = x, y = y),
+               pch = 23, size = 12, alpha = 0.8, show.legend = TRUE) +
+    scale_fill_manual(values = fill_cols) +
+    # stat_ellipse(data = nmds_df %>% filter(!is.na(depth.bin)),
+    #              mapping = aes(x = x, y = y, group = depth.bin, colour = depth.bin),
+    #              lwd = 2, level = 0.95, show.legend = FALSE, inherit.aes = FALSE) + #if you want to show ellipses
+    # scale_colour_manual(values = depth_cols) + #ellipses colours
+    xlab("NMDS1") +
+    ylab("NMDS2") +
+    theme_bw() +
+    theme(
+      panel.grid.major = element_blank(),
+      panel.grid.minor = element_blank()
+    ) +
+    my_text_theme_nmds()
+  
+  return(temp_plot)
+}
+
+###
+
+###Calling NMDS Function - Example####
+make_16s_nmds_plot(
+  meta_16s   = meta_16s,
+  asv_table  = ASV_table, # raw count table, Hellinger transformation happens inside
+  drop_cols  = c(1, 2),
+  fill_var   = "Upwelling.Classification",
+  fill_cols  = upwelling.cols,
+  depth_cols = depth.cols)
+###
+```
+
+```{r dbRDA}
+###RDA Function####
+
+# Create a db-RDA (distance-based Redundancy Analysis) plot with customization options
+# This function performs Hellinger transformation on raw ASV data, computes Bray-Curtis dissimilarity, runs a db-RDA (capscale) with stepwise variable selection, and generates a plot of the ordination results with environmental vectors overlaid. 
+
+# meta_16s: the main input metadata dataframe containing sample metadata and categorical variables
+# asv_table: the raw ASV count table to be Hellinger-transformed before ordination
+# rename_map: a named character vector mapping old column names to new ones, e.g. c(Temp. = "Temp_C")
+# env_vars: character vector of environmental variable names (post-renaming) to include in the RDA
+# fill_var: the name of the metadata column (as a string) to colour points by, e.g. "Upwelling.Classification"
+# fill_cols: a named colour palette (named vector) corresponding to the levels of fill_var
+# label_var: the name of the metadata column (as a string) to use as point labels, e.g. "Sample_Name_Final"
+# meta_join_vars: character vector of metadata columns to join onto points for plotting, must include SAMPLE_ID
+
+make_16s_rda_plot <- function(meta_16s, asv_table, rename_map, env_vars, fill_var, fill_cols, label_var, meta_join_vars) {
+  
+  # Hellinger transformation of raw ASV table
+  asv_table.matrix <- asv_table %>%
+    column_to_rownames(var = "SAMPLE_ID") %>%
+    as.matrix()
+  hel_table <- decostand(asv_table.matrix, method = "hellinger")
+  
+  # Clean and prepare metadata
+  meta_rda <- meta_16s %>%
+    rename(!!!rename_map) %>%
+    select(all_of(c("SAMPLE_ID", env_vars))) %>%
+    filter(if_all(all_of(env_vars), ~ . != "N/A")) %>%  # scope to env_vars only
+    na.omit() %>%
+    mutate(across(all_of(env_vars), as.numeric))
+  
+  # Subset and align ASV table to samples in metadata
+  hel_df <- hel_table %>%
+    as.data.frame() %>%
+    rownames_to_column(var = "SAMPLE_ID") %>%
+    filter(SAMPLE_ID %in% meta_rda$SAMPLE_ID) %>%
+    column_to_rownames(var = "SAMPLE_ID")
+  
+  # Compute Bray-Curtis dissimilarity
+  dist_rda <- vegdist(hel_df, method = "bray")
+  
+  # Scale environmental variables
+  meta_rda[, env_vars] <- scale(meta_rda[, env_vars], center = TRUE)
+  
+  # Align metadata to ASV sample order -- join ASV table to ensure same sample set as original code
+  meta_rda <- left_join(
+    hel_df %>% rownames_to_column(var = "SAMPLE_ID"),
+    meta_rda,
+    by = "SAMPLE_ID") %>%
+  select(all_of(c("SAMPLE_ID", env_vars))) %>%
+  column_to_rownames(var = "SAMPLE_ID")
+
+  # Build RDA formula dynamically from env_vars
+  rda_formula <- as.formula(paste("dist_rda ~", paste(env_vars, collapse = "+")))
+
+  # Run stepwise db-RDA
+  rda_full <- capscale(rda_formula, meta_rda, pstep = 1000, R2scop = TRUE)
+  rda_step <- ordistep(rda_full, direction = "both", pstep = 1000, R2scop = TRUE)
+  
+  # Extract axis variance
+  output <- anova.cca(rda_step, by = "axis", step = 1000)
+  vec2 <- output$SumOfSqs / sum(output$SumOfSqs) * 100
+  
+  # Extract points and vectors
+  points_df <- as.data.frame(rda_step$CCA$wa[, 1:2])
+  points_df$SAMPLE_ID <- rownames(points_df)
+  points_df <- left_join(points_df, meta_16s[, meta_join_vars], by = "SAMPLE_ID")
+  
+  vectors_df <- as.data.frame(rda_step$CCA$biplot[, 1:2])
+  vectors_df$names <- rownames(vectors_df)
+  
+  # Build plot
+  temp_plot <- ggplot(points_df) +
+    geom_point(data = points_df %>% filter(Year == "2021"),
+               mapping = aes(x = CAP1, y = CAP2, fill = .data[[fill_var]]),
+               pch = 21, size = 12, alpha = 0.8, show.legend = TRUE) +
+    geom_point(data = points_df %>% filter(Year == "2022"),
+               mapping = aes(x = CAP1, y = CAP2, fill = .data[[fill_var]]),
+               pch = 23, size = 12, alpha = 0.8, show.legend = TRUE) +
+    geom_text(data = points_df,
+              aes(x = CAP1, y = CAP2, label = .data[[label_var]]), size = 3) +
+    scale_fill_manual(values = fill_cols) +
+    geom_segment(data = vectors_df,
+                 aes(x = 0, xend = CAP1 / 2, y = 0, yend = CAP2 / 2),
+                 arrow = arrow(length = unit(0.25, "cm")),
+                 linewidth = 0.75, colour = "black") +
+    geom_text(data = vectors_df,
+              aes(x = CAP1 / 1.8, y = CAP2 / 1.8, label = names), size = 5) +
+    xlab(paste0("RDA1 (", round(vec2[1], digits = 2), "%)")) +
+    ylab(paste0("RDA2 (", round(vec2[2], digits = 2), "%)")) +
+    theme_bw() +
+    theme(
+      panel.grid.major = element_blank(),
+      panel.grid.minor = element_blank(),
+      legend.position = "none"
+    ) +
+    my_text_theme()
+  
+  return(temp_plot)
+}
+
+###Calling the RDA function - Example####
+rename_map_rda <- c(
+  Temp.          = "Temp_C",
+  Sal.           = "Salinity_PSU",
+  Turb.          = "Turbidity_NTU",
+  Chla           = "ChlA_ug_L",
+  Stratification = "N2",
+  Diss.O2        = "Dis_O2_Conc",
+  SiO4           = "SiO4_uM",
+  PO4            = "PO4_uM",
+  NO3            = "NO3_uM",
+  NH3            = "NH3_uM",
+  NO2            = "NO2_uM",
+  Density        = "rho"
+)
+
+env_vars_rda <- c(
+  "Temp.", "Sal.", "Turb.", "Chla", "Stratification",
+  "Diss.O2", "PO4", "NO3", "NH3")  # SiO4 excluded due to collinearity with NO3
+
+make_16s_rda_plot(
+  meta_16s       = meta_16s_50m,
+  asv_table      = ASV_table.50m,
+  rename_map     = rename_map_rda,
+  env_vars       = env_vars_rda,
+  fill_var       = "Upwelling.Classification",
+  fill_cols      = upwelling.cols,
+  label_var      = "Sample_Name_Final",
+  meta_join_vars = c("SAMPLE_ID", "Sample_Name_Final", "Glacier_name", "Year", "Upwelling.Classification"))
+###
+```
+
+```{r PERMANOVA - geochemical}
+###PERMANOVA Function####
+
+# Perform PERMANOVA and pairwise PERMANOVA on physicochemical metadata
+# This function calculates Euclidean distances on scaled physicochemical variables, runs a global PERMANOVA and all pairwise comparisons between groups, and returns both the global result and Holm-adjusted pairwise p-values.
+# meta_16s: the main input metadata dataframe
+# rename_map: a named character vector mapping old column names to new ones
+# env_vars: character vector of environmental variable names (post-renaming) to include
+# drop_vars: character vector of numeric columns to drop before distance calculation (e.g. "Depth", "Year")
+# group_var: the name of the metadata column (as a string) to use as the grouping variable, e.g. "Upwelling.Classification"
+# label_var: the name of the column to use as rownames/sample labels, e.g. "Sample_Name_Final"
+# filter_vars: named character vector of columns to pre-filter for "NA" strings, e.g. c("SiO4_uM", "NH3_uM")
+
+make_16s_permanova <- function(meta_16s, rename_map, env_vars, drop_vars, group_var, label_var, filter_vars) {
+  
+  # Filter rows containing "NA" strings in specified columns
+  meta_permanova <- meta_16s
+  for (col in filter_vars) {
+    meta_permanova <- meta_permanova %>% filter(.data[[col]] != "NA")
+  }
+  
+  # Rename columns
+  meta_permanova_all <- meta_permanova %>%
+    rename(!!!rename_map)
+  
+  # Convert env_vars to numeric and set rownames
+  meta_nums <- meta_permanova_all %>%
+    mutate(across(all_of(env_vars), as.numeric)) %>%
+    column_to_rownames(var = label_var) %>%
+    select_if(is.numeric) %>%
+    select(-any_of(drop_vars))
+  
+  # Join group variable back on
+  meta_nums <- meta_nums %>%
+    mutate(!!label_var := rownames(.)) %>%
+    left_join(
+      meta_permanova_all %>% select(all_of(c(label_var, group_var))),
+      by = label_var
+    )
+  
+  # Set rownames and separate numeric matrix from grouping
+  rownames(meta_nums) <- meta_nums[[label_var]]
+  meta_nums2 <- meta_nums %>% select(-all_of(c(label_var, group_var)))
+  
+  # Calculate Euclidean distances on scaled data
+  x <- scale(meta_nums2)
+  dist_physico <- vegdist(x, method = "euclidean")
+  
+  # Global PERMANOVA
+  adonis_global <- adonis2(
+    dist_physico ~ meta_nums[[group_var]],
+    permutations = 10000
+  )
+  cat("Global PERMANOVA result:\n")
+  print(adonis_global)
+  
+  # Pairwise PERMANOVA
+  pairwise_p <- numeric()
+  layers <- unique(meta_permanova_all[[group_var]])
+  layers <- layers[!is.na(layers)]
+  layer_pairs <- combn(layers, 2, simplify = FALSE)
+  
+  for (i in seq_along(layer_pairs)) {
+    layer1 <- layer_pairs[[i]][1]
+    layer2 <- layer_pairs[[i]][2]
+    
+    comparison_name <- paste(
+      gsub(" ", "_", gsub(",", "", layer1)), "vs",
+      gsub(" ", "_", gsub(",", "", layer2))
+    )
+    
+    # Filter to current pair and prepare numeric matrix
+    meta_case <- meta_permanova_all %>%
+      filter(.data[[group_var]] == layer1 | .data[[group_var]] == layer2) %>%
+      mutate(across(all_of(env_vars), as.numeric)) %>%
+      column_to_rownames(var = label_var) %>%
+      select_if(is.numeric) %>%
+      select(-any_of(drop_vars))
+    
+    dist_case <- vegdist(scale(meta_case), method = "euclidean")
+    
+    # Extract grouping variable for same samples
+    meta_vars_case <- meta_permanova_all %>%
+      filter(.data[[group_var]] == layer1 | .data[[group_var]] == layer2) %>%
+      column_to_rownames(var = label_var)
+    
+    adonis_case <- adonis2(
+      dist_case ~ meta_vars_case[[group_var]],
+      permutations = 10000
+    )
+    
+    pairwise_p[comparison_name] <- adonis_case$`Pr(>F)`[1]
+    cat("Comparison:", comparison_name, "- P-value:", adonis_case$`Pr(>F)`[1], "\n")
+  }
+  
+  # Holm-adjusted pairwise p-values
+  pairwise_adjusted <- as.data.frame(p.adjust(pairwise_p, method = "holm"))
+  
+  return(list(
+    global   = adonis_global,
+    pairwise = pairwise_adjusted
+  ))
+}
+
+###
+
+###Geochemical PERMANOVA - Example Call####
+rename_map_permanova <- c(
+  Temp          = "Temp_C",
+  Turbidity     = "Turbidity_NTU",
+  Stratification = "N2",
+  Chla          = "ChlA_ug_L",
+  Diss_O2       = "Dis_O2_Conc",
+  SiO4          = "SiO4_uM",
+  PO4           = "PO4_uM",
+  NO2           = "NO2_uM",
+  NO3           = "NO3_uM",
+  NH3           = "NH3_uM",
+  Depth         = "Depth_m"
+)
+
+env_vars_permanova <- c(
+  "Temp", "Turbidity", "Stratification", "Chla", "Diss_O2",
+  "SiO4", "PO4", "NO2", "NO3", "NH3", "Salinity_PSU")
+
+# Full water column
+result_all <- make_16s_permanova(
+  meta_16s    = meta_16s,
+  rename_map  = rename_map_permanova,
+  env_vars    = env_vars_permanova,
+  drop_vars   = c("Depth", "Year", "Distance_from_glacier"),
+  group_var   = "Upwelling.Classification",
+  label_var   = "Sample_Name_Final",
+  filter_vars = c("SiO4_uM", "NH3_uM", "N2", "NO3_uM")
+)
+
+# Upper 50m only
+result_50m <- make_16s_permanova(
+  meta_16s    = meta_16s_50m,
+  rename_map  = rename_map_permanova,
+  env_vars    = env_vars_permanova,
+  drop_vars   = c("Depth", "Year", "Distance_from_glacier"),
+  group_var   = "Upwelling.Classification",
+  label_var   = "Sample_Name_Final",
+  filter_vars = c("SiO4_uM", "NH3_uM", "N2", "NO3_uM")
+)
+
+# Access results
+result_all$global
+result_all$pairwise
+result_50m$pairwise
+```
+
+```{r PERMANOVA - Microbial community}
+###PERMANOVA - microbial community####
+
+# Perform PERMANOVA and pairwise PERMANOVA on microbial community (ASV) data
+# This function prepares ASV and metadata tables, computes Bray-Curtis dissimilarity on the ASV table, runs a global PERMANOVA and all pairwise comparisons between groups, and returns both the global result and Holm-adjusted pairwise p-values.
+# meta_16s: the main input metadata dataframe
+# asv_table: the raw ASV count table with a sample ID column
+# asv_sample_id: the name of the sample ID column in the ASV table, e.g. "Sample_ID"
+# asv_drop_cols: column indices or names to drop from the ASV table after joining metadata (e.g. non-ASV columns)
+# rename_map: a named character vector mapping old column names to new ones
+# env_vars: character vector of environmental variable names (post-renaming) to include
+# drop_vars: character vector of numeric columns to drop before distance calculation
+# group_var: the name of the metadata column to use as the grouping variable, e.g. "Upwelling.Classification"
+# label_var: the name of the column to use as rownames/sample labels, e.g. "Sample_Name_Final"
+# filter_vars: character vector of columns to pre-filter for "NA" strings, e.g. c("SiO4_uM", "NH3_uM")
+
+make_16s_asv_permanova <- function(meta_16s, asv_table, asv_sample_id,
+                                   rename_map, env_vars, drop_vars,
+                                   group_var, label_var, filter_vars) {
+  
+  # Filter rows containing "NA" strings in specified columns
+  meta_permanova <- meta_16s
+  for (col in filter_vars) {
+    meta_permanova <- meta_permanova %>% filter(.data[[col]] != "NA")
+  }
+  
+  # Rename columns
+  meta_permanova_all <- meta_permanova %>%
+    rename(!!!rename_map)
+  
+  # Convert env_vars to numeric and set rownames
+  meta_nums <- meta_permanova_all %>%
+    mutate(across(all_of(env_vars), as.numeric)) %>%
+    column_to_rownames(var = label_var) %>%
+    select_if(is.numeric) %>%
+    select(-any_of(drop_vars))
+  
+  # Join group variable back on
+  meta_nums <- meta_nums %>%
+    mutate(!!label_var := rownames(.)) %>%
+    left_join(
+      meta_permanova_all %>% select(all_of(c(label_var, group_var))),
+      by = label_var
+    )
+  rownames(meta_nums) <- meta_nums[[label_var]]
+  
+  # Prepare ASV table - join metadata to get label_var as rownames
+  asv_prep <- asv_table %>%
+    rename(SAMPLE_ID = all_of(asv_sample_id)) %>%
+    left_join(meta_16s, by = "SAMPLE_ID") %>%
+    filter(.data[[label_var]] %in% meta_permanova_all[[label_var]]) %>%
+    column_to_rownames(var = label_var) %>%
+    select(all_of(colnames(asv_table)[colnames(asv_table) != asv_sample_id])) 
+  
+  # Compute Bray-Curtis dissimilarity on ASV table
+  dist_asv <- vegdist(asv_prep, method = "bray")
+  
+  # Align metadata to ASV table row order
+  meta_nums <- meta_nums[match(rownames(asv_prep), rownames(meta_nums)), , drop = FALSE]
+  
+  # Global PERMANOVA
+  adonis_global <- adonis2(
+    as.formula(paste("dist_asv ~", group_var)),
+    data = meta_nums,
+    permutations = 10000
+  )
+  cat("Global PERMANOVA result:\n")
+  print(adonis_global)
+  
+  # Pairwise PERMANOVA
+  pairwise_p <- numeric()
+  layers <- unique(meta_permanova_all[[group_var]])
+  layers <- layers[!is.na(layers)]
+  layer_pairs <- combn(layers, 2, simplify = FALSE)
+  
+  for (i in seq_along(layer_pairs)) {
+    layer1 <- layer_pairs[[i]][1]
+    layer2 <- layer_pairs[[i]][2]
+    
+    comparison_name <- paste(
+      gsub(" ", "_", gsub(",", "", layer1)), "vs",
+      gsub(" ", "_", gsub(",", "", layer2))
+    )
+    
+    # Filter metadata to current pair
+    meta_case <- meta_permanova_all %>%
+      filter(.data[[group_var]] == layer1 | .data[[group_var]] == layer2) %>%
+      mutate(across(all_of(env_vars), as.numeric)) %>%
+      column_to_rownames(var = label_var) %>%
+      select_if(is.numeric) %>%
+      select(-any_of(drop_vars)) %>%
+      mutate(!!label_var := rownames(.)) %>%
+      left_join(
+        meta_permanova_all %>% select(all_of(c(label_var, group_var))),
+        by = label_var
+      )
+    rownames(meta_case) <- meta_case[[label_var]]
+    
+    # Prepare ASV table for current pair
+    asv_case <- asv_table %>%
+      rename(SAMPLE_ID = all_of(asv_sample_id)) %>%
+      left_join(meta_16s, by = "SAMPLE_ID") %>%
+      filter(.data[[label_var]] %in% meta_case[[label_var]]) %>%
+      column_to_rownames(var = label_var) %>%
+      select(all_of(colnames(asv_table)[colnames(asv_table) != asv_sample_id]))
+    
+    dist_case <- vegdist(asv_case, method = "bray")
+    
+    # Align metadata to ASV table row order
+    meta_case <- meta_case[match(rownames(asv_case), rownames(meta_case)), , drop = FALSE]
+    
+    # Run PERMANOVA
+    adonis_case <- adonis2(
+      as.formula(paste("dist_case ~", group_var)),
+      data = meta_case,
+      permutations = 10000
+    )
+    
+    pairwise_p[comparison_name] <- adonis_case$`Pr(>F)`[1]
+    cat("Comparison:", comparison_name, "- P-value:", adonis_case$`Pr(>F)`[1], "\n")
+  }
+  
+  # Holm-adjusted pairwise p-values
+  pairwise_adjusted <- as.data.frame(p.adjust(pairwise_p, method = "holm"))
+  
+  return(list(
+    global   = adonis_global,
+    pairwise = pairwise_adjusted
+  ))
+}
+###
+
+###Calling the ASV PERMANOVA function - Example####
+rename_map_permanova <- c(
+  Temp          = "Temp_C",
+  Turbidity     = "Turbidity_NTU",
+  Stratification = "N2",
+  Chla          = "ChlA_ug_L",
+  Diss_O2       = "Dis_O2_Conc",
+  SiO4          = "SiO4_uM",
+  PO4           = "PO4_uM",
+  NO2           = "NO2_uM",
+  NO3           = "NO3_uM",
+  NH3           = "NH3_uM",
+  Depth         = "Depth_m"
+)
+
+env_vars_permanova <- c(
+  "Temp", "Turbidity", "Stratification", "Chla", "Diss_O2",
+  "SiO4", "PO4", "NO2", "NO3", "NH3", "Salinity_PSU"
+)
+
+# Full water column - grouped by upwelling classification
+result_asv_all <- make_16s_asv_permanova(
+  meta_16s       = meta_16s,
+  asv_table      = ASV_table.filt,
+  asv_sample_id  = "SAMPLE_ID",
+  rename_map     = rename_map_permanova,
+  env_vars       = env_vars_permanova,
+  drop_vars      = c("Depth", "Year", "Distance_from_glacier"),
+  group_var      = "Upwelling.Classification",
+  label_var      = "Sample_Name_Final",
+  filter_vars    = c("SiO4_uM", "NH3_uM", "NO3_uM", "N2"))
+
+# Upper 50m - grouped by upwelling classification
+result_asv_50m <- make_16s_asv_permanova(
+  meta_16s       = meta_16s_50m,
+  asv_table      = ASV_table.50m,
+  asv_sample_id  = "SAMPLE_ID",
+  rename_map     = rename_map_permanova,
+  env_vars       = env_vars_permanova,
+  drop_vars      = c("Depth", "Year", "Distance_from_glacier"),
+  group_var      = "Upwelling.Classification",
+  label_var      = "Sample_Name_Final",
+  filter_vars    = c("SiO4_uM", "NH3_uM", "NO3_uM", "N2"))
+
+# Access results
+result_asv_all$global
+result_asv_all$pairwise
+result_asv_50m$pairwise
+###
+```
+
+```{r Taxa Barplot}
+###Barplot Function####
+
+# Create a stacked bar plot of prokaryotic community composition by taxonomy
+# This function prepares ASV and taxonomy data, calculates relative abundances, groups low-abundance taxa below a threshold into "Other", applies custom taxon name shortening, and generates a faceted stacked bar plot grouped by a metadata variable.
+# meta_16s: the main input metadata dataframe
+# asv_table: the filtered ASV count table with a SAMPLE_ID column
+# taxa_table: the taxonomy table with an ASV_ID column and a Unique.ID column
+# sample_order: character vector of Sample_Name_Final values in the desired x-axis order
+# taxa_rename: named character vector mapping full Unique.ID strings to short display names
+# taxa_levels: character vector defining the factor order of taxa for the legend and fill
+# group_var: the name of the metadata column to facet by, e.g. "Upwelling.Classification"
+# group_levels: character vector defining the factor order of the grouping variable
+# fill_cols: named colour palette corresponding to taxa_levels
+# plot_title: string for the legend title, e.g. "16S Prokaryote Taxonomy"
+# ra_threshold: numeric, taxa with mean relative abundance below this are grouped as "Other", default 1
+
+make_16s_barplot <- function(meta_16s, asv_table, taxa_table, sample_order,
+                             taxa_rename, taxa_levels, group_var, group_levels,
+                             fill_cols, plot_title = "16S Prokaryote Taxonomy",
+                             ra_threshold = 1) {
+  
+  # Prepare wide ASV table filtered to samples in metadata
+  asv_bp <- asv_table %>%
+    filter(SAMPLE_ID %in% meta_16s$SAMPLE_ID) %>%
+    column_to_rownames(var = "SAMPLE_ID") %>%
+    t() %>%
+    as.data.frame() %>%
+    rownames_to_column(var = "ASV_ID")
+  
+  # Filter taxonomy table to match ASVs
+  taxa_bp <- taxa_table %>%
+    filter(ASV_ID %in% asv_bp$ASV_ID)
+  
+  # Convert to long format and calculate relative abundance
+  long_asv <- make_long_noRA(asv_bp, taxa_bp)
+  long_asv$Sample_Name_Final <- fix_labels(long_asv$Sample_Name_Final, meta_16s, IDt = "SAMPLE_ID")
+  long_asv <- long_asv %>%
+    group_by(Sample_Name_Final) %>%
+    mutate(percent = count / sum(count) * 100) %>%
+    ungroup()
+  
+  # Summarise by taxon and sample
+  vec <- c("Sample_Name_Final", "Unique.ID")
+  bp <- long_asv %>%
+    group_by(across(all_of(vec))) %>%
+    summarise(summed.percent = sum(percent), .groups = "drop") %>%
+    group_by(Unique.ID) %>%
+    mutate(avg.sum = mean(summed.percent)) %>%
+    ungroup()
+  
+  # Group taxa below threshold into "Other"
+  tax <- ifelse(bp$avg.sum < ra_threshold,
+                paste0("Other (<", ra_threshold, "%)"),
+                as.vector(bp[["Unique.ID"]]))
+  bp[["Unique.ID"]] <- tax
+  
+  # Apply custom taxon name shortening
+  for (full_name in names(taxa_rename)) {
+    bp$Unique.ID <- ifelse(bp$Unique.ID == full_name, taxa_rename[[full_name]], bp$Unique.ID)
+  }
+  
+  # Set factor levels for taxa and join metadata
+  bp$Unique.ID <- factor(bp$Unique.ID, levels = taxa_levels)
+  bp <- bp %>%
+    left_join(meta_16s, by = "Sample_Name_Final") %>%
+    select(all_of(c("Sample_Name_Final", "Unique.ID", "summed.percent", "avg.sum", group_var)))
+  
+  # Set factor levels for sample order and grouping variable
+  bp$Sample_Name_Final <- factor(bp$Sample_Name_Final, levels = sample_order)
+  bp[[group_var]] <- factor(bp[[group_var]], levels = group_levels)
+  
+  # Build plot
+  temp_plot <- ggplot(bp, aes(x = Sample_Name_Final, y = summed.percent, fill = Unique.ID)) +
+    geom_bar(stat = "identity", show.legend = TRUE) +
+    scale_fill_manual(values = fill_cols) +
+    facet_grid(as.formula(paste(". ~", group_var)),
+               drop = TRUE, scale = "free", space = "free_x") +
+    ylab("") +
+    xlab("") +
+    labs(fill = plot_title) +
+    theme(
+      axis.text.x  = element_text(angle = 90, hjust = 1, size = 10, colour = "black"),
+      axis.text.y  = element_text(size = 30, colour = "black"),
+      legend.position   = "right",
+      legend.key.size   = unit(0.5, "cm"),
+      legend.text       = element_text(size = 6),
+      legend.title      = element_text(size = 9),
+      axis.title        = element_blank(),
+      strip.text        = element_blank()
+    )
+  
+  return(temp_plot)
+}
+
+###
+
+###Calling the barplot function - Example####
+# prep the data to see what the top taxa are
+asv_bp <- ASV_table.filt %>%
+  filter(SAMPLE_ID %in% meta_16s$SAMPLE_ID) %>%
+  column_to_rownames(var = "SAMPLE_ID") %>%
+  t() %>%
+  as.data.frame() %>%
+  rownames_to_column(var = "ASV_ID")
+
+taxa_bp <- taxa_table %>% filter(ASV_ID %in% asv_bp$ASV_ID)
+
+long_asv <- make_long_noRA(asv_bp, taxa_bp)
+long_asv$Sample_Name_Final <- fix_labels(long_asv$Sample_Name_Final, meta_16s, IDt = "SAMPLE_ID")
+long_asv <- long_asv %>%
+  group_by(Sample_Name_Final) %>%
+  mutate(percent = count / sum(count) * 100) %>%
+  ungroup()
+
+bp_check <- long_asv %>%
+  group_by(Sample_Name_Final, Unique.ID) %>%
+  summarise(summed.percent = sum(percent), .groups = "drop") %>%
+  group_by(Unique.ID) %>%
+  mutate(avg.sum = mean(summed.percent)) %>%
+  distinct(Unique.ID, avg.sum) %>%
+  arrange(desc(avg.sum))
+
+# see all taxa above 1%
+bp_check %>% filter(avg.sum >= 1)
+
+#manually rename the taxa for the function
+taxa_rename_prok <- c(
+  "Bacteria_Bacteroidota_Bacteroidia_Flavobacteriales_Flavobacteriaceae_Polaribacter"                        = "Polaribacter",
+  "Bacteria_Proteobacteria_Alphaproteobacteria_Rhodobacterales_Rhodobacteraceae_Sulfitobacter"               = "Sulfitobacter",
+  "Bacteria_Bacteroidota_Bacteroidia_Flavobacteriales_Flavobacteriaceae_"                                    = "Unclass. Flavobacteriaceae",
+  "Bacteria_Bacteroidota_Bacteroidia_Flavobacteriales_NS9_marine_group_NS9_marine_group"                     = "NS9 Marine Group",
+  "Bacteria_Proteobacteria_Gammaproteobacteria_Oceanospirillales_Nitrincolaceae_uncultured"                  = "Uncult. Nitrincolaceae",
+  "Bacteria_Proteobacteria_Alphaproteobacteria_Rhodobacterales_Rhodobacteraceae_"                            = "Unclass. Rhodobacteraceae",
+  "Archaea_Crenarchaeota_Nitrososphaeria_Nitrosopumilales_Nitrosopumilaceae_Candidatus_Nitrosopumilus"       = "Cand. Nitrosopumilus",
+  "Bacteria_Bacteroidota_Bacteroidia_Flavobacteriales_Flavobacteriaceae_Ulvibacter"                          = "Ulvibacter",
+  "Bacteria_Bacteroidota_Bacteroidia_Sphingobacteriales_NS11-12_marine_group_NS11-12_marine_group"           = "NS11-12 Marine Group",
+  "Bacteria_Proteobacteria_Alphaproteobacteria_SAR11_clade_Clade_I_Clade_Ia"                                = "SAR11 (Clade Ia)",
+  "Bacteria_Bacteroidota_Bacteroidia_Flavobacteriales_Flavobacteriaceae_uncultured"                          = "Uncult. Flavobacteriaceae",
+  "Bacteria_Proteobacteria_Gammaproteobacteria_Thiomicrospirales_Thioglobaceae_SUP05_cluster"                = "SUP05 Cluster",
+  "Bacteria_Bacteroidota_Bacteroidia_Flavobacteriales_Flavobacteriaceae_Formosa"                             = "Formosa",
+  "Bacteria_Bacteroidota_Bacteroidia_Flavobacteriales_Cryomorphaceae_uncultured"                             = "Uncult. Cryomorphaceae",
+  "Bacteria_Bacteroidota_Bacteroidia_Flavobacteriales_Flavobacteriaceae_NS5_marine_group"                    = "NS5 Marine Group",
+  "Bacteria_Proteobacteria_Gammaproteobacteria_Cellvibrionales_Porticoccaceae_SAR92_clade"                   = "SAR92 Clade",
+  "Bacteria_Proteobacteria_Gammaproteobacteria_Alteromonadales_Colwelliaceae_"                               = "Unclass. Colwelliaceae",
+  "Bacteria_Verrucomicrobiota_Verrucomicrobiae_Verrucomicrobiales_Rubritaleaceae_Rubritalea"                 = "Rubritaleae",
+  "Archaea_Thermoplasmatota_Thermoplasmata_Marine_Group_II_Marine_Group_II_Marine_Group_II"                  = "Marine Group II"
+)
+
+taxa_levels_prok <- c(
+  "Cand. Nitrosopumilus", "Marine Group II", "Polaribacter",
+  "Sulfitobacter", "Unclass. Flavobacteriaceae", "NS9 Marine Group",
+  "Uncult. Nitrincolaceae", "Unclass. Rhodobacteraceae", "Ulvibacter",
+  "SAR11 (Clade Ia)", "NS11-12 Marine Group", "Uncult. Flavobacteriaceae",
+  "SUP05 Cluster", "Formosa", "Uncult. Cryomorphaceae",
+  "NS5 Marine Group", "SAR92 Clade", "Unclass. Colwelliaceae",
+  "Rubritaleae", "Other (<1%)"
+)
+
+sample_order_prok <- c("Jones_Sound_OG_5_2022", "Jones_Sound_OG_27_2022",
+                       "Jones_Sound_OG_100_2022", "Jones_Sound_2_5_2021",
+                       "Jones_Sound_2_100_2021", "Jones_Sound_SSW_5_2021", 
+                       "Jones_Sound_DSW_350_2021", "Jones_Sound_OG_400_2022", 
+                       "Jones_Sound_OG_450_2022", "Jones_Sound_OG_50_2022",  
+                       "Jones_Sound_14_28_2021", "Jones_Sound_Deep_15_2022", 
+                       "Jones_Sound_Deep_40_2022", "South_Cape_Fiord_34_5_2021", 
+                       "South_Cape_Fiord_10B_5_2022", "South_Cape_Fiord_10B_45_2022",
+                       "South_Cape_Fiord_10B_80_2022", "Jones_Sound_14_300_2021",
+                       "Jones_Sound_Deep_500_2022", "Grise_Fiord_27_5_2021", "Grise_Fiord_27_20_2021",
+                       "Grise_Fiord_28_5_2021", "Grise_Fiord_S12_25_2022", "Grise_Fiord_S12_50_2022",
+                       "Grise_Fiord_S13_5_2022", "Grise_Fiord_S13_30_2022", "Grise_Fiord_S13_55_2022",
+                       "Grise_Fiord_S13_90_2022", "Grise_Fiord_S1_60_2022", "Grise_Fiord_S1_90_2022",
+                       "Grise_Fiord_S1_380_2022", "Harbour_39_5_2021", "Harbour_40_5_2021",
+                       "Harbour_40_20_2021", "Jakeman_3_5_2021", "Jakeman_3_20_2021",
+                       "Jakeman_3_100_2021", "Jakeman_50_5_2021", "Jakeman_5_20_2021",
+                       "Jakeman_40b_5_2021", "Jakeman_40b_20_2021", "Jakeman_41b_5_2021", 
+                       "Jakeman_41b_20_2021", "Jakeman_42b_5_2021",
+                       "Jakeman_44b_5_2021", "Jakeman_44b_20_2021", "Jakeman_46b_5_2021",
+                       "Jakeman_46b_20_2021", "Jakeman_50_20_2021", "Starnes_1_6_5_2021", 
+                       "Starnes_1_6_20_2021", "Starnes_1_7_5_2021", "Starnes_1_7_25_2021",
+                       "Starnes_2_10_5_2021", "Starnes_2_11_5_2021", 
+                       "Belcher_1_5_2021", "Belcher_1_30_2021", "Belcher_1_250_2021", 
+                       "Belcher_3_5_2021", "Belcher_3_45_2021", "Belcher_3_225_2021",  
+                       "Belcher_5_5_2021", "Belcher_5_20_2021", "Belcher_5_250_2021", 
+                       "Belcher_9_5_2021", "Belcher_9_30_2021", "Belcher_9_300_2021",
+                       "Belcher_11_5_2021", "Belcher_11_30_2021", "Belcher_11_300_2021",
+                       "Belcher_13_5_2021", "Belcher_13_35_2021", "Belcher_13_250_2021", 
+                       "Belcher_14_5_2021", "Belcher_14_30_2021", "Belcher_14_325_2021", 
+                       "Belcher_1_40_2022", "Belcher_1_65_2022", "Belcher_1_105_2022", 
+                       "Belcher_1_240_2022", "Belcher_6_45_2022", "Belcher_6_70_2022",      
+                       "Sverdrup_1_5_2021", "Sverdrup_1_25_2021", "Sverdrup_1_120_2021",   
+                       "Sverdrup_2_5_2021", "Sverdrup_2_18_2021", "Sverdrup_2_125_2021",
+                       "Sverdrup_20_5_2021", "Sverdrup_3_5_2021", "Sverdrup_3_20_2021",
+                       "Sverdrup_3_125_2021", "Sverdrup_5_5_2021", "Sverdrup_5_8_2021", 
+                       "Sverdrup_5_50_2021", "Sverdrup_7_5_2021", "Sverdrup_7_15_2021",
+                       "Sverdrup_11_5_2021", "Sverdrup_11_8_2021", "Sverdrup_11_45_2021", 
+                       "Sverdrup_14_5_2021", "Sverdrup_14_18_2021", "Sverdrup_14_50_2021", 
+                       "Sverdrup_15_5_2021", "Sverdrup_15_28_2021", "Sverdrup_15_200_2021",
+                       "Sverdrup_1_5_2022", "Sverdrup_1_15_2022", "Sverdrup_1_40_2022",
+                       "Sverdrup_4_5_2022", "Sverdrup_4_100_2022", "Sydkap_12_20_2021",
+                       "Sydkap_12_5_2021", "Sydkap_13_5_2021", "Sydkap_13_20_2021", "Sydkap_14_5_2021",
+                       "Sydkap_14_20_2021", "Sydkap_18_5_2021", "Sydkap_18_20_2021", "Sydkap_7_5_2022",
+                       "Sydkap_7_30_2022", "Sydkap_7_50_2022", "Sydkap_7_80_2022", "Sydkap_1_5_2022",
+                       "Sydkap_1_20_2022", "Sydkap_1_45_2022", "Sydkap_1_80_2022",
+                       "Sydkap_SDB1_5_2022", "Sydkap_SDB1_15a_2022", "Sydkap_SDB1_15b_2022",
+                       "Sydkap_SDB1_45_2022",
+                       "Talbot_Inlet_1_5_2021", "Talbot_Inlet_1_20_2021",
+                       "Talbot_Inlet_1_500_2021", "Talbot_Inlet_7_5_2021",
+                       "Talbot_Inlet_7_15_2021", "Talbot_Inlet_7_350_2021",
+                       "Talbot_Inlet_8_5_2021", "Talbot_Inlet_8_20_2021",
+                       "Talbot_Inlet_8_180_2021", "Talbot_Inlet_5_5_2021",
+                       "Talbot_Inlet_5_25_2021", "Talbot_Inlet_5_340_2021",        
+                       "Talbot_Inlet_6_5_2021", "Talbot_Inlet_6_400_2021")
+
+group_levels_prok <- c("No upwelling", "Upwelling", "Open Water, upper 50m", "Below 50m")
+
+make_16s_barplot(
+  meta_16s     = meta_16s,
+  asv_table    = ASV_table.filt,
+  taxa_table   = taxa_table,
+  sample_order = sample_order_prok,  # the full sample order vector
+  taxa_rename  = taxa_rename_prok,
+  taxa_levels  = taxa_levels_prok,
+  group_var    = "Upwelling.Classification",
+  group_levels = group_levels_prok,
+  fill_cols    = bp.cols,
+  plot_title   = "16S Prokaryote Taxonomy",
+  ra_threshold = 1
+)
+
+```
+
+```{r Shannon Diversity Boxplot}
+# Create a Shannon diversity boxplot grouped by a metadata variable
+
+# This function calculates Shannon diversity from a Hellinger-transformed ASV table, joins metadata, and generates a boxplot of diversity grouped by a specified variable.
+# asv_table: the raw ASV count table to be Hellinger-transformed before ordination, where rows are samples and columns are ASVs 
+# meta_16s: the main input metadata dataframe
+# meta_vars: character vector of metadata columns to join, must include SAMPLE_ID and group_var
+# group_var: the name of the metadata column to group by on the x-axis, e.g. "Upwelling.Classification"
+# group_levels: character vector defining the factor order of the grouping variable
+# group_labels: character vector of display labels corresponding to group_levels
+# fill_cols: named colour palette corresponding to group_levels
+# y_limits: numeric vector of length 2 for y-axis limits, e.g. c(3, 7)
+
+###Shannon Diversity Boxplot Function####
+make_shannon_boxplot <- function(asv_table, meta_16s, meta_vars, group_var,
+                                 group_levels, group_labels, fill_cols, y_limits) {
+  
+  # Hellinger transformation of raw ASV table
+  asv_table.matrix <- asv_table %>%
+    column_to_rownames(var = "Sample_ID") %>%
+    as.matrix()
+  hel_table <- decostand(asv_table.matrix, method = "hellinger")
+  
+  # Calculate Shannon diversity
+  shannon <- diversity(hel_table, index = "shannon") %>%
+    as.data.frame() %>%
+    rename(Shannon.Diversity = ".") %>%
+    rownames_to_column(var = "SAMPLE_ID")
+  
+  # Join metadata
+  shannon_meta <- left_join(shannon, meta_16s[, meta_vars], by = "SAMPLE_ID")
+  
+  # Set factor levels and labels for grouping variable
+  shannon_meta[[group_var]] <- factor(shannon_meta[[group_var]],
+                                      levels = group_levels,
+                                      labels = group_labels)
+  
+  # Build plot
+  temp_plot <- ggplot(data = shannon_meta, aes(x = .data[[group_var]],
+                                               y = Shannon.Diversity,
+                                               fill = .data[[group_var]])) +
+    geom_boxplot(show.legend = FALSE, alpha = 0.8) +
+    scale_fill_manual(values = fill_cols) +
+    xlab("") +
+    ylab("Shannon Diversity") +
+    scale_y_continuous(limits = y_limits) +
+    theme_bw() +
+    theme(
+      axis.title.y  = element_text(size = 30, colour = "black"),
+      axis.text.y   = element_text(size = 30, colour = "black"),
+      axis.text.x   = element_blank(),
+      axis.ticks.x  = element_blank(),
+      panel.border  = element_rect(size = 2, color = "black")
+    )
+  
+  return(temp_plot)
+}
+
+###
+
+###Calling the Shannon Diversity Function - Example####
+make_shannon_boxplot(
+  asv_table    = ASV_table,
+  meta_16s     = meta_16s,
+  meta_vars    = c("SAMPLE_ID", "Depth_m", "Glacier_name", "Upwelling.Classification"),
+  group_var    = "Upwelling.Classification",
+  group_levels = c("No upwelling", "Upwelling", "Open Water, upper 50m", "Below 50m"),
+  group_labels = c("No upwelling", "Upwelling", "Open Water, upper 50m", "Below 50m"), #if you want to relabel anything
+  fill_cols    = upwelling.cols,
+  y_limits     = c(3, 7)) #change depending on output for values
+
+###
+```
+
+```{r CLAM Analysis}
+###Dataframe prep + CLAM Analysis Function ####
+# Run CLAM specialization analysis on ASV data comparing between sites in the upper 50 m of the water colymn with Upwelling vs. No Upwelling, within 5 km of glacier face or shoreline
+# This function filters samples, runs clamtest to identify specialist ASVs, prepares upper 50m and deep dataframes with relative abundances, applies taxon renaming, and aligns factor ordering between the two depth layers.
+# meta_16s: the main input metadata dataframe
+# meta_16s_50m: metadata filtered to upper 50m samples
+# asv_table: the raw ASV count table with a Sample_ID column
+# taxa_table: the taxonomy table with ASV_ID and Unique.ID columns
+# asv_sample_id: the name of the sample ID column in the ASV table, e.g. "Sample_ID"
+# group_var: metadata column to group by in clamtest, e.g. "Upwelling.Classification"
+# filter_groups: character vector of group_var levels to EXCLUDE, e.g. c("Open Water, upper 50m", "Below 50m")
+# dist_threshold: maximum distance from glacier to include, e.g. 5 km
+# rename_lookup: named character vector mapping full Unique.ID strings to short display names
+# coverage_limit: clamtest coverage.limit argument, default 25
+# alpha: clamtest alpha argument, default 0.01
+# specialization: clamtest specialization argument, default 0.75
+# ra_threshold: minimum average relative abundance to include in upper 50m plot, default 0.5
+# deep_depth: minimum depth in metres to define "deep" samples, default 50
+
+make_clam_data <- function(meta_16s, meta_16s_50m, asv_table, taxa_table,
+                           asv_sample_id = "Sample_ID", group_var,
+                           filter_groups, dist_threshold,
+                           rename_lookup, coverage_limit = 25,
+                           alpha = 0.01, specialization = 0.75,
+                           ra_threshold = 0.5, deep_depth = 50) {
+  
+  # Filter metadata to upwelling/no upwelling samples within distance threshold
+  meta_clam <- meta_16s_50m %>%
+    filter(!.data[[group_var]] %in% filter_groups) %>%
+    filter(Distance_from_glacier <= dist_threshold)
+  
+  # Prepare ASV table - filter to relevant samples and remove zero-count ASVs
+  asv_clam <- asv_table %>%
+    rename(SAMPLE_ID = all_of(asv_sample_id)) %>%
+    filter(SAMPLE_ID %in% meta_clam$SAMPLE_ID) %>%
+    pivot_longer(-SAMPLE_ID) %>%
+    group_by(name) %>%
+    mutate(total = sum(value)) %>%
+    filter(total != 0) %>%
+    ungroup() %>%
+    select(-total) %>%
+    pivot_wider(id_cols = SAMPLE_ID) %>%
+    as.data.frame()
+  
+  # Align metadata and ASV table rownames
+  meta_clam <- meta_clam %>%
+    column_to_rownames(var = "SAMPLE_ID") %>%
+    select(all_of(group_var))
+  
+  asv_clam <- asv_clam %>%
+    filter(SAMPLE_ID %in% rownames(meta_clam)) %>%
+    column_to_rownames(var = "SAMPLE_ID")
+  
+  # Remove zero-sum columns and align shared samples
+  asv_clam <- asv_clam[, colSums(asv_clam) > 0]
+  shared_ids <- intersect(rownames(asv_clam), rownames(meta_clam))
+  asv_clam <- asv_clam[shared_ids, , drop = FALSE]
+  meta_clam <- meta_clam[shared_ids, , drop = FALSE]
+  
+  # Run CLAM test
+  clam_result <- with(meta_clam,
+    clamtest(asv_clam, meta_clam[[group_var]],
+             coverage.limit = coverage_limit,
+             alpha = alpha,
+             specialization = specialization))
+  
+  clam_result <- clam_result %>%
+    rename(ASV_ID = Species) %>%
+    left_join(taxa_table, by = "ASV_ID")
+  
+  # Subset to specialists only and calculate relative abundances
+  group_cols <- paste0("Total_", unique(meta_clam[[group_var]]))
+  
+  clam_subset <- clam_result %>%
+    filter(Classes != "Too_rare" & Classes != "Generalist") %>%
+    pivot_longer(cols = all_of(group_cols),
+                 names_to = "Grouping",
+                 values_to = "Value") %>%
+    group_by(Grouping, Unique.ID) %>%
+    mutate(summed.counts = sum(Value)) %>%
+    ungroup() %>%
+    mutate(Grouping = gsub("Total_", "", Grouping))
+  
+  clam_bp_df <- clam_subset %>%
+    mutate(Value.bp = ifelse(grepl(filter_groups[2], Grouping), -Value, Value)) %>%
+    mutate(Specialist = ifelse(grepl(filter_groups[2], Classes), "NoUp", "Up")) %>%
+    mutate(Specialist.Unique.ID = paste0(Unique.ID, "_", Specialist)) %>%
+    mutate(Specialist.numeric = ifelse(grepl(filter_groups[2], Classes), 2, 1))
+  
+  # Prepare upper 50m long ASV table
+  taxa_clam <- taxa_table %>% filter(ASV_ID %in% clam_bp_df$ASV_ID)
+  
+  asv_long <- asv_clam %>%
+    t() %>%
+    as.data.frame() %>%
+    rownames_to_column(var = "ASV_ID") %>%
+    filter(ASV_ID %in% taxa_clam$ASV_ID)
+  
+  long_asv <- make_long_noRA(asv_long, taxa_clam) %>%
+    rename(SAMPLE_ID = Sample_Name_Final) %>%
+    left_join(meta_clam %>% rownames_to_column("SAMPLE_ID"), by = "SAMPLE_ID") %>%
+    rename(Grouping = all_of(group_var))
+  
+  # Calculate per-sample then per-group relative abundance for upper 50m
+  plot_df <- long_asv %>%
+    group_by(SAMPLE_ID) %>%
+    mutate(sample_total = sum(count, na.rm = TRUE),
+           percent = ifelse(sample_total > 0, 100 * count / sample_total, NA_real_)) %>%
+    ungroup() %>%
+    group_by(Grouping, Unique.ID) %>%
+    summarise(grouping.percent = mean(percent, na.rm = TRUE), .groups = "drop") %>%
+    group_by(Unique.ID) %>%
+    filter(any(grouping.percent > ra_threshold)) %>%
+    ungroup() %>%
+    mutate(Value.bp = ifelse(Grouping == unique(meta_clam[[group_var]])[1],
+                             -grouping.percent, grouping.percent)) %>%
+    mutate(Classes = clam_bp_df$Classes[match(Unique.ID, clam_bp_df$Unique.ID)]) %>%
+    mutate(ASV_ID = clam_bp_df$ASV_ID[match(Unique.ID, clam_bp_df$Unique.ID)]) %>%
+    mutate(Unique.ID = recode(Unique.ID, !!!rename_lookup, .default = Unique.ID))
+  
+  # Prepare deep samples
+  meta_deep <- meta_16s %>% filter(Depth_m > deep_depth)
+  taxa_deep <- taxa_clam %>% filter(ASV_ID %in% plot_df$ASV_ID)
+  
+  asv_deep <- asv_table %>%
+    rename(SAMPLE_ID = all_of(asv_sample_id)) %>%
+    filter(SAMPLE_ID %in% meta_deep$SAMPLE_ID) %>%
+    column_to_rownames("SAMPLE_ID") %>%
+    t() %>%
+    as.data.frame() %>%
+    rownames_to_column("ASV_ID") %>%
+    filter(ASV_ID %in% taxa_deep$ASV_ID)
+  
+  long_deep <- make_long_noRA(asv_deep, taxa_deep)
+  
+  clam_bp_deep <- long_deep %>%
+    group_by(Unique.ID) %>%
+    summarise(count = sum(count), .groups = "drop") %>%
+    mutate(percent = 100 * count / sum(count)) %>%
+    left_join(clam_bp_df %>% select(Unique.ID, Classes) %>% distinct(),
+              by = "Unique.ID") %>%
+    mutate(Unique.ID = recode(Unique.ID, !!!rename_lookup, .default = Unique.ID))
+  
+  # Align factor ordering between upper 50m and deep
+  upper_order <- plot_df %>%
+    group_by(Classes, Unique.ID) %>%
+    summarise(percent_upper = mean(grouping.percent), .groups = "drop")
+  
+  deep_order <- clam_bp_deep %>%
+    group_by(Classes, Unique.ID) %>%
+    summarise(percent_deep = mean(percent), .groups = "drop")
+  
+  order_df <- full_join(upper_order, deep_order, by = c("Classes", "Unique.ID")) %>%
+    mutate(across(starts_with("percent"), ~ replace_na(., 0)))
+  
+  order_up <- order_df %>%
+    filter(Classes == "Specialist_Upwelling") %>%
+    arrange(desc(percent_upper)) %>%
+    pull(Unique.ID)
+  
+  order_no_up <- order_df %>%
+    filter(Classes == "Specialist_No upwelling") %>%
+    arrange(desc(percent_upper)) %>%
+    pull(Unique.ID)
+  
+  levels_vec <- c(order_up, order_no_up)
+  
+  plot_df <- plot_df %>%
+    mutate(Classes = factor(Classes, levels = c("Specialist_Upwelling", "Specialist_No upwelling")),
+           Unique.ID = factor(Unique.ID, levels = rev(unique(levels_vec))))
+  
+  clam_bp_deep <- clam_bp_deep %>%
+    mutate(Classes = factor(Classes, levels = c("Specialist_Upwelling", "Specialist_No upwelling")),
+           Unique.ID = factor(Unique.ID, levels = rev(unique(levels_vec)))) %>%
+    distinct(Unique.ID, Classes, .keep_all = TRUE)
+  
+  return(list(
+    clam_result  = clam_result,
+    plot_df      = plot_df,
+    clam_bp_deep = clam_bp_deep,
+    clam_bp_df   = clam_bp_df
+  ))
+}
+
+###
+
+###Plotting CLAM results Function####
+# Generate CLAM specialist barplots for upper 50m and deep samples
+# clam_data: the list output from make_clam_data()
+# clam_cols: named colour vector for the two upwelling groups, e.g. c("Upwelling" = "#679bbf", "No upwelling" = "#b6aad3")
+# deep_col: colour for the deep barplot, e.g. "#2e654f"
+# show_labels: logical, whether to show y-axis taxon labels, default FALSE
+
+make_clam_plots <- function(clam_data, clam_cols, deep_col = "#2e654f", show_labels = FALSE) {
+  
+  plot_df      <- clam_data$plot_df
+  clam_bp_deep <- clam_data$clam_bp_deep
+  
+  # Symmetric x-axis limits for upper 50m plot
+  L <- ceiling(max(abs(plot_df$Value.bp), na.rm = TRUE))
+  
+  y_axis_theme <- if (show_labels) {
+    element_text(size = 25, colour = "black")
+  } else {
+    element_blank()
+  }
+  
+  # Upper 50m plot
+  upper_plot <- ggplot(plot_df, aes(x = Value.bp, y = Unique.ID, fill = Grouping)) +
+    geom_col(width = 0.8, show.legend = FALSE) +
+    scale_fill_manual(values = clam_cols) +
+    scale_x_continuous(limits = c(-L, L), labels = abs) +
+    labs(x = "", y = "") +
+    theme_minimal() +
+    theme(
+      axis.text.x  = element_text(size = 20, colour = "black"),
+      axis.text.y  = y_axis_theme,
+      axis.title.y = element_blank(),
+      panel.grid.major = element_blank(),
+      panel.grid.minor = element_blank(),
+      panel.background = element_blank()
+    )
+  
+  # Deep plot
+  deep_plot <- ggplot(clam_bp_deep, aes(x = percent, y = Unique.ID)) +
+    geom_col(width = 0.8, fill = deep_col, show.legend = FALSE) +
+    labs(x = "", y = "") +
+    theme_minimal() +
+    theme(
+      axis.text.x  = element_text(size = 20, colour = "black"),
+      axis.text.y  = y_axis_theme,
+      axis.title.y = element_blank(),
+      panel.grid.major = element_blank(),
+      panel.grid.minor = element_blank(),
+      panel.background = element_blank()
+    )
+  
+  # Combined arrangement
+  combined <- ggarrange(upper_plot, deep_plot, nrow = 1, widths = c(3, 1))
+  
+  return(list(
+    upper   = upper_plot,
+    deep    = deep_plot,
+    combined = combined
+  ))
+}
+
+###
+
+###Calling the CLAM functions - Example####
+###Based on the taxa identified for specialization cutoff and relative abundance cutoff, I created a rename_lookup vector to map the full Unique.ID strings to shorter display names for the plots. You can modify this as needed based on your specific ASVs and taxonomy.
+rename_lookup <- c(
+   "Archaea_Crenarchaeota_Nitrososphaeria_Nitrosopumilales_Nitrosopumilaceae_Candidatus_Nitrosopumilus__06bd5bec1ccb5b0893f27b3024f49a7e" =
+     "Cand. Nitrosopumilus_ASV1",
+  "Archaea_Crenarchaeota_Nitrososphaeria_Nitrosopumilales_Nitrosopumilaceae_Candidatus_Nitrosopumilus__25829522245ab7ca1722239106b9d1d2" =
+    "Cand. Nitrosopumilus_ASV2",
+  "Archaea_Crenarchaeota_Nitrososphaeria_Nitrosopumilales_Nitrosopumilaceae_Candidatus_Nitrosopumilus__648c236167b6a86f2104a069efe7cd67" =
+    "Cand. Nitrosopumilus_ASV3",
+  "Archaea_Thermoplasmatota_Thermoplasmata_Marine_Group_II_Marine_Group_II_Marine_Group_II__8eab3fcf96ffbbdc0005e704531193ad" = "Marine Group II_ASV1",
+    "Archaea_Thermoplasmatota_Thermoplasmata_Marine_Group_II_Marine_Group_II_Marine_Group_II_hydrothermal_vent_12c9862eba95cb0d82bd929cbacd368b" = "Marine Group II_ASV2",
+  "Archaea_Thermoplasmatota_Thermoplasmata_Marine_Group_II_Marine_Group_II_Marine_Group_II_hydrothermal_vent_4bc018571f0cb7a7982beaa73835ab67" = "Marine Group II_ASV3",
+  "Bacteria_______256dd73fcec6ac88047d4defa9ae29c9" = "Unclass. Bacteria_ASV1",
+  "Bacteria_______7b3d3afe275a5bcbd1c72dbf495bbbba" = "Unclass. Bacteria_ASV2",
+  "Bacteria_Armatimonadota_Chthonomonadetes_Chthonomonadales_Chthonomonadaceae_Chthonomonas__f1512b8121f949b20f8d56a229e0f1c0" = "Chthonomonas",
+  "Bacteria_Bacteroidota_Bacteroidia_Chitinophagales_Chitinophagaceae_Flavitalea__0c9f51a5167be639a432908f79d84f77"
+  = "Flavitalea",
+  "Bacteria_Bacteroidota_Bacteroidia_Cytophagales_Cyclobacteriaceae_Marinoscillum_uncultured_Cytophagia_501f82da8df593c8388c6812940b78a6" = "Marinoscillum",
+  "Bacteria_Bacteroidota_Bacteroidia_Flavobacteriales_Crocinitomicaceae_Fluviicola_uncultured_Bacteroidetes/Chlorobi_7e4c7dad6d238f760f964d46c391f620" = "Fluviicola",
+  "Bacteria_Bacteroidota_Bacteroidia_Flavobacteriales_Cryomorphaceae_NS10_marine_group_uncultured_Bacteroidetes/Chlorobi_a3cb7ab8a88b86bf619ab9205345a05b" = "NS10 Marine Group_ASV1",
+  "Bacteria_Bacteroidota_Bacteroidia_Flavobacteriales_Cryomorphaceae_NS10_marine_group_uncultured_Flavobacteriia_baaf5e96931ad7df7e362941f0f1d151" = "NS10 Marine Group_ASV2",
+  "Bacteria_Bacteroidota_Bacteroidia_Flavobacteriales_Cryomorphaceae_uncultured__b9716ebfe0f241a3807198020b4f4d89" =
+    "Uncult. Cryomorphaceae_ASV1",
+  "Bacteria_Bacteroidota_Bacteroidia_Flavobacteriales_Cryomorphaceae_uncultured_uncultured_bacterium_37ecd8cff3ff8e812ebea4cfe248c0a0" = "Uncult. Cryomorphaceae_ASV2",
+  "Bacteria_Bacteroidota_Bacteroidia_Flavobacteriales_Flavobacteriaceae_Flavobacterium__28b8633fc41227d70e2338fa450ed8c2" = "Flavobacterium_ASV1",
+  "Bacteria_Bacteroidota_Bacteroidia_Flavobacteriales_Flavobacteriaceae_Flavobacterium__a4f5f592dd40c58409af4e2dee989552" = "Flavobacterium_ASV2",
+  "Bacteria_Bacteroidota_Bacteroidia_Flavobacteriales_Flavobacteriaceae_Flavobacterium__fa00ad5f021b300b5e43c40339a24905" = "Flavobacterium_ASV3",
+    "Bacteria_Bacteroidota_Bacteroidia_Flavobacteriales_Flavobacteriaceae_Flavobacterium__c7de82d60809c2abae1ff7c61adedfec" = "Flavobacterium_ASV4",
+    "Bacteria_Bacteroidota_Bacteroidia_Flavobacteriales_Flavobacteriaceae_Flavicella_uncultured_bacterium_cf3c4a886e2523c8f99cf849c31a72bc" = "Flavicella",
+  "Bacteria_Bacteroidota_Bacteroidia_Flavobacteriales_Flavobacteriaceae_NS3a_marine_group__3c324de4c9faed35d9c62c6cc7ddb4c8" = "NS3a Marine Group_ASV1",
+  "Bacteria_Bacteroidota_Bacteroidia_Flavobacteriales_Flavobacteriaceae_NS3a_marine_group__612c02ab136cabfe7c040904767b05fd" = "NS3a Marine Group_ASV2",
+  "Bacteria_Bacteroidota_Bacteroidia_Flavobacteriales_Flavobacteriaceae_NS4_marine_group__377053d207159c7a1bb36cce4003cbc5" = "NS4 Marine Group_ASV1",
+  "Bacteria_Bacteroidota_Bacteroidia_Flavobacteriales_Flavobacteriaceae_NS4_marine_group__c73d25b585d3a5ea3afff84b305dd2a2" = "NS4 Marine Group_ASV2",
+  "Bacteria_Bacteroidota_Bacteroidia_Flavobacteriales_Flavobacteriaceae_NS5_marine_group__ec3d3bc4588ff0378e46faf1ab8a1b70" = "N5 Marine Group_ASV1",
+    "Bacteria_Bacteroidota_Bacteroidia_Flavobacteriales_Flavobacteriaceae_NS5_marine_group__b8851764647d20a259e09a64d81d3af9" = "NS5 Marine Group_ASV2",
+    "Bacteria_Bacteroidota_Bacteroidia_Flavobacteriales_NS7_marine_group_NS7_marine_group_uncultured_bacterium_db3277b9479ec27d9c838dbaf7264288" = "NS7 Marine Group",
+  "Bacteria_Bacteroidota_Bacteroidia_Flavobacteriales_Flavobacteriaceae_Polaribacter__7422207dab73e24fab9ef0a117fb3005" = "Polaribacter_ASV1",
+  "Bacteria_Bacteroidota_Bacteroidia_Flavobacteriales_Flavobacteriaceae_Polaribacter__f2d506047edef4a3c9a38ebfd09ac7bf" = "Polaribacter_ASV2",
+  "Bacteria_Bacteroidota_Bacteroidia_Flavobacteriales_Flavobacteriaceae_uncultured__474923d60b0c86eae0e6cbe2b008d007" = "Uncult. Flavobacteriaceae_ASV1",
+  "Bacteria_Cyanobacteria_Cyanobacteriia_Cyanobacteriales_Phormidiaceae_Tychonema_CCAP_1459-11B__6c6acd2f3e85861a938ce9c0a6004a4e" ="Tychonema_CCAP_1459-11B",
+  "Bacteria_Planctomycetota_Planctomycetes_Pirellulales_Pirellulaceae_Rubripirellula_uncultured_bacterium_cf5128c045f1d7d55abad3921a3cbe35" = "Rubripirellula",
+    "Bacteria_Proteobacteria_Alphaproteobacteria_Rhodobacterales_Rhodobacteraceae_Roseobacter_clade_NAC11-7_lineage_uncultured_Rhodobacteraceae_c1c58eb8887ff15ecc9f51c94d232fdf" = "NAC11-7 Lineag",
+  "Bacteria_Proteobacteria_Alphaproteobacteria_Rhodobacterales_Rhodobacteraceae___422411f208abe54db66be4982d9bfba5" 
+  = "Unclass. Rhodobacteraceae",
+  "Bacteria_Proteobacteria_Alphaproteobacteria_Rhodobacterales_Rhodobacteraceae_Octadecabacter_uncultured_marine_7e024437ab55fdcba9c49acbcf5e44c3" = "Octadecabacter",
+  "Bacteria_Proteobacteria_Alphaproteobacteria_Rhodobacterales_Rhodobacteraceae_Planktomarina__273888f165f2eec8d5d95b5569dc27a4" = "Planktomarina",
+  "Bacteria_Proteobacteria_Alphaproteobacteria_Rhodobacterales_Rhodobacteraceae_Sulfitobacter__c9ffc377460d90d5535fac565986b7ce" = "Sulfitobacter_ASV1",
+  "Bacteria_Proteobacteria_Alphaproteobacteria_Rhodobacterales_Rhodobacteraceae_Sulfitobacter__cfd5ec16f32d35ab5893ead7c5269fe3" = "Sulfitobacter_ASV2",
+  "Bacteria_Proteobacteria_Alphaproteobacteria_Rhodobacterales_Rhodobacteraceae_Sulfitobacter__eb3e05be63545334c3685a21b974a1a4" = "Sulfitobacter_ASV3",
+  "Bacteria_Proteobacteria_Alphaproteobacteria_Rhodobacterales_Rhodobacteraceae_uncultured_alpha_proteobacterium_4f76d47d230b80c4a3cd16777226253f" = "Uncult. Rhodobacteraceae",
+  "Bacteria_Proteobacteria_Alphaproteobacteria_Rhodobacterales_Rhodobacteraceae_Yoonia-Loktanella_Loktanella_salsilacus_c377f15948a7ed999ae5ebedd235290b" = "Yoonia-Loktanella",
+    "Bacteria_Proteobacteria_Alphaproteobacteria_Rhodobacterales_Rhodobacteraceae_uncultured_Loktanella_sp._578c4b171595f929fbb4fcc9ab17ef9d" = "Uncult. Loktanella",
+   "Bacteria_Proteobacteria_Alphaproteobacteria_Rhodospirillales_Magnetospiraceae_Magnetospira_uncultured_marine_9f5dbd3f42f69a7d7eaf62177ae0e6f2" = "Magnetospira",
+  "Bacteria_Proteobacteria_Alphaproteobacteria_SAR11_clade____9fcbe67addcf2d54c55b3429f998d73b" 
+  = "Unclass. SAR11 Clade",
+  "Bacteria_Proteobacteria_Alphaproteobacteria_SAR11_clade_Clade_I_Clade_Ia__4a824a4d888c44358ed8e70d497462c1" 
+  = "SAR11 Clade Ia",
+  "Bacteria_Proteobacteria_Gammaproteobacteria_Alteromonadales_Alteromonadaceae_Paraglaciecola__cb49ad5af7849a66d1f67399060d70b5" = "Paraglaciecola",
+  "Bacteria_Proteobacteria_Gammaproteobacteria_Alteromonadales_Colwelliaceae___0f0247af7783a695bec7648931a6108e" 
+  = "Unclass. Colwelliaceae",
+  "Bacteria_Proteobacteria_Gammaproteobacteria_Alteromonadales_Colwelliaceae_Colwellia__78e56294c430d0c826f9f2896066ad77" = "Colwellia",
+  "Bacteria_Proteobacteria_Gammaproteobacteria_Alteromonadales_Pseudoalteromonadaceae_Pseudoalteromonas__edcb9755963978d6db33397e7d1c964d" 
+  = "Pseudoalteromonas_ASV1",
+  "Bacteria_Proteobacteria_Gammaproteobacteria_Alteromonadales_Psychromonadaceae_Psychromonas__977e4d064d04c5560ad2a6983f212871" = "Unclass. Psychromonas_ASV1",
+  "Bacteria_Proteobacteria_Gammaproteobacteria_Alteromonadales_Psychromonadaceae_Psychromonas__e5df6ce36c66fe4b8a16035341c1eeb2" = "Unclass. Psychromonas_ASV2",
+  "Bacteria_Proteobacteria_Gammaproteobacteria_Burkholderiales_Comamonadaceae___02523daf5356885c7d28e05d5910acb3" 
+  = "Unclass. Comamonadaceae",
+  "Bacteria_Proteobacteria_Gammaproteobacteria_Oceanospirillales_Nitrincolaceae_uncultured__51ca15b1d127be3879d0370ca5198eb6" = "Uncult. Nitrincolaceae_ASV1",
+  "Bacteria_Proteobacteria_Gammaproteobacteria_Oceanospirillales_Nitrincolaceae_uncultured__cab212252d9e37afb36e2e0ebf212854" = "Uncult. Nitrincolaceae_ASV2",
+  "Bacteria_Proteobacteria_Gammaproteobacteria_Oceanospirillales_Pseudohongiellaceae_Pseudohongiella__d1e180be3599fa01ad97157aea33a61e" = "Pseudohongiella",
+  "Bacteria_Proteobacteria_Gammaproteobacteria_OM182_clade_OM182_clade_OM182_clade_marine_gamma_b572fb01e0b54a8c6666ca997fa34eff" = "OM182 Clade",
+    "Bacteria_Proteobacteria_Gammaproteobacteria_SAR86_clade_SAR86_clade_SAR86_clade__8fd1cbe0890b89c069502b66cbbf0547" = "SAR86 Clade",
+  "Bacteria_Proteobacteria_Gammaproteobacteria_Thiomicrospirales_Thioglobaceae_SUP05_cluster__473d4bcfc4263c681e2781b7d3811f8b" = "SUP05 Cluster_ASV1",
+    "Bacteria_Proteobacteria_Gammaproteobacteria_Thiomicrospirales_Thioglobaceae_SUP05_cluster__e1903c4ac05bde8ecf14a089432923fd" = "SUP05 Cluster_ASV2",
+  "Bacteria_Proteobacteria_Gammaproteobacteria_Thiotrichales_Thiotrichaceae_uncultured_uncultured_marine_26033d65078c88ae7d2a3d36369f2480" = "Uncult. Thiotrichaceae_ASV1",
+  "Bacteria_Proteobacteria_Gammaproteobacteria_Thiotrichales_Thiotrichaceae_uncultured_uncultured_marine_77a6972068e7e7e8d5376c8571ebba3a" = "Uncult. Thiotrichaceae_ASV2",
+    "Bacteria_SAR324_clade(Marine_group_B)_SAR324_clade(Marine_group_B)_SAR324_clade(Marine_group_B)_SAR324_clade(Marine_group_B)_SAR324_clade(Marine_group_B)__eb75eb12e76aee17e9e0e98af59e1674" = "SAR324 clade (Marine Group B)",
+  "Bacteria_Verrucomicrobiota_Verrucomicrobiae_Verrucomicrobiales_Rubritaleaceae_Roseibacillus_seawater_metagenome_e76e19b0942921f35ddbc56322b762a5" = "Roseibacillus_ASV1",
+  "Bacteria_Verrucomicrobiota_Verrucomicrobiae_Verrucomicrobiales_Rubritaleaceae_Roseibacillus__488249b757b3c8b6fff9e9d25b16fb95" = "Roseibacillus_ASV2",
+  "Bacteria_Verrucomicrobiota_Verrucomicrobiae_Verrucomicrobiales_Rubritaleaceae_Rubritalea__29ae0dbc6f0e79d6cc1da456e704bc6e" = "Rubritalea_ASV1",
+  "Bacteria_Verrucomicrobiota_Verrucomicrobiae_Verrucomicrobiales_Rubritaleaceae_Rubritalea_uncultured_bacterium_bc5d7ba02e1c288b7c02fd5dd2c9c1a3" = "Rubritalea_ASV2",
+  "Archaea_Nanoarchaeota_Nanoarchaeia_Woesearchaeales_GW2011_GWC1_47_15_GW2011_GWC1_47_15_uncultured_archaeon_52dad663301d451f2942b9ff02e20944" =
+    "GW2011_GWC1_47_15",
+  "Bacteria_Bacteroidota_Bacteroidia_Flavobacteriales_Flavobacteriaceae_NS3a_marine_group__5698326776d7189a37bfc616f2b47135" = "NS3a Marine Group_ASV3",
+  "Bacteria_Bacteroidota_Bacteroidia_Flavobacteriales_Flavobacteriaceae_Polaribacter__f0af1fdda947c94e9b77cb6fdca6b830" = "Polaribacter_ASV3",
+  "Bacteria_Bacteroidota_Bacteroidia_Flavobacteriales_Flavobacteriaceae_uncultured__8df40942ce7d33030b9807614df3e50f" = "Uncult. Flavobacteriaceae_ASV2",
+  "Bacteria_Bacteroidota_Bacteroidia_Flavobacteriales_NS9_marine_group_NS9_marine_group_uncultured_Bacteroidetes_aec9fb01b5fdb32596c975ca9984d322" = 
+    "NS9 Marine Group",
+  "Bacteria_Proteobacteria______afa14a9e472000cea557aa92b4da226b" = "Unclass. Bacteria_ASV3",
+  "Bacteria_Proteobacteria_Gammaproteobacteria_Alteromonadales_Pseudoalteromonadaceae_Pseudoalteromonas__6ead949833a94af307af35163c44bbc6" =
+    "Pseudoalteromonas_ASV2",
+  "Bacteria_Proteobacteria_Gammaproteobacteria_Burkholderiales_Burkholderiaceae_Burkholderia-Caballeronia-Paraburkholderia__5cae451902ed5bf92eb73d82426c3f16"
+  = "Burkholderia-Caballeronia-Paraburkholderia",
+  "Bacteria_Proteobacteria_Gammaproteobacteria_Nitrosococcales_Methylophagaceae_uncultured__82af70e200c351c30281eeb4615be3d7" = "Uncult. Methylophagaceae")
+
+clam_data <- make_clam_data(
+  meta_16s       = meta_16s,
+  meta_16s_50m   = meta_16s_50m,
+  asv_table      = ASV_table,
+  taxa_table     = taxa_table_ASV,
+  asv_sample_id  = "Sample_ID",
+  group_var      = "Upwelling.Classification",
+  filter_groups  = c("Open Water, upper 50m", "Below 50m"),
+  dist_threshold = 5,
+  rename_lookup  = rename_lookup,
+  coverage_limit = 25,
+  alpha          = 0.01,
+  specialization = 0.75,
+  ra_threshold   = 0.5,
+  deep_depth     = 50
+)
+
+clam_cols <- c("Upwelling" = "#679bbf", "No upwelling" = "#b6aad3")
+
+# Without taxon labels
+plots <- make_clam_plots(clam_data, clam_cols, deep_col = "#2e654f", show_labels = FALSE)
+plots$combined
+
+# With taxon labels for post-processing and to confirm taxa are in same order
+plots_labelled <- make_clam_plots(clam_data, clam_cols, deep_col = "#2e654f", show_labels = TRUE)
+plots_labelled$combined
+
+###
+
+```
+
